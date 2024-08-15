@@ -338,18 +338,29 @@ int LinuxTimestamperGeneric::HWTimestamper_txtimestamp
 	}
 
 	// Retrieve the timestamp
+
+    // 在接收 SO_TIMESTAMPING 控制消息时，内核会返回多个时间戳。具体的顺序和数量可能取决于具体的系统和配置。典型的控制消息数据格式如下：
+    // timespec[0] - 用户态时间戳
+    // timespec[1] - 系统时间戳
+    // timespec[2] - 设备时间戳
+    // 因此，在代码中需要通过指针偏移来获取正确的时间戳。
+    // cjy标注
 	cmsg = CMSG_FIRSTHDR(&msg);
 	while( cmsg != NULL ) {
 		if( cmsg->cmsg_level == SOL_SOCKET &&
 			cmsg->cmsg_type == SO_TIMESTAMPING ) {
-			struct timespec *ts_device, *ts_system;
-			Timestamp device, system;
+			struct timespec *ts_device, *ts_system, *ts_userspace;
+			Timestamp device, system, userspace;
+            ts_userspace = ((struct timespec *) CMSG_DATA(cmsg));
+            userspace = tsToTimestamp( ts_userspace );
 			ts_system = ((struct timespec *) CMSG_DATA(cmsg)) + 1;
 			system = tsToTimestamp( ts_system );
 			ts_device = ts_system + 1; device = tsToTimestamp( ts_device );
 			system._version = version;
 			device._version = version;
-			timestamp = device;
+            userspace._version = version;
+//			timestamp = device;
+            timestamp = userspace;//ts_device and ts_system could not be gained when software timestamp is used
 			ret = 0;
 			break;
 		}
@@ -388,19 +399,24 @@ bool LinuxTimestamperGeneric::post_init( int ifindex, int sd, TicketingLock *loc
 
 	device.ifr_data = (char *) &hwconfig;
 	memset( &hwconfig, 0, sizeof( hwconfig ));
-	hwconfig.rx_filter = HWTSTAMP_FILTER_PTP_V2_EVENT;
-	hwconfig.tx_type = HWTSTAMP_TX_ON;
-	err = ioctl( sd, SIOCSHWTSTAMP, &device );
-	if( err == -1 ) {
-		GPTP_LOG_ERROR
-			("Failed to configure timestamping: %s", strerror(errno));
-		return false;
-	}
+//    hwconfig.rx_filter = HWTSTAMP_FILTER_PTP_V2_EVENT;
+//    hwconfig.tx_type = HWTSTAMP_TX_ON;
+    hwconfig.rx_filter = HWTSTAMP_FILTER_NONE;
+    hwconfig.tx_type = HWTSTAMP_TX_OFF;//use software timestamp
+//	err = ioctl( sd, SIOCSHWTSTAMP, &device );
+//	if( err == -1 ) {
+//		GPTP_LOG_ERROR
+//			("Failed to configure timestamping: %s", strerror(errno));
+//		return false;
+//	}
 
 	timestamp_flags |= SOF_TIMESTAMPING_TX_HARDWARE;
 	timestamp_flags |= SOF_TIMESTAMPING_RX_HARDWARE;
 	timestamp_flags |= SOF_TIMESTAMPING_SYS_HARDWARE;
 	timestamp_flags |= SOF_TIMESTAMPING_RAW_HARDWARE;
+    timestamp_flags |= SOF_TIMESTAMPING_TX_SOFTWARE;//use software timestamp
+    timestamp_flags |= SOF_TIMESTAMPING_RX_SOFTWARE;
+    timestamp_flags |= SOF_TIMESTAMPING_SOFTWARE;
 	err = setsockopt
 		( sd, SOL_SOCKET, SO_TIMESTAMPING, &timestamp_flags,
 		  sizeof(timestamp_flags) );

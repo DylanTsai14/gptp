@@ -1,0 +1,1 @@
+sudo ./gptp ens37 -V -GM
